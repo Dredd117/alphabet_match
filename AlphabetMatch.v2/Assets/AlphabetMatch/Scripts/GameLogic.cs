@@ -6,6 +6,7 @@ using TMPro;
 using System.IO;
 using System.Runtime.Serialization.Formatters.Binary;
 using System;
+using System.Diagnostics;
 
 public class GameLogic : MonoBehaviour
 {
@@ -65,6 +66,7 @@ public class GameLogic : MonoBehaviour
     public GridObject[] gridObjects;
     public RectTransform[] gridTransforms;
     public Image DisplayLetterText;
+    [SerializeField] private TextMeshProUGUI DisplayLetterTMP;  // new text-based letter
     public RectTransform DisplayGridTransform;
     public RectTransform DisplayLetterTransform;
     public GameObject[] starObjects;
@@ -115,6 +117,16 @@ public class GameLogic : MonoBehaviour
     public LetterCaseMode letterCaseMode = LetterCaseMode.Lowercase;
     // Cache "home" positions for each tile
     private Vector3[] gridBasePositions;
+
+    [Header("Music Playlist")]
+    [SerializeField] private List<AudioClip> musicTracks = new List<AudioClip>();
+    [SerializeField] private bool shuffle = false;
+    [SerializeField] private bool loopPlaylist = true;
+    [SerializeField] private bool keepCurrentTrackOnToggle = true;
+
+    private int currentTrackIndex = 0;
+    private bool playlistActive = false;   // are we managing auto-advance?
+    private bool wasPlayingBeforeMute = false;
 
 
     // Start is called before the first frame update
@@ -722,15 +734,15 @@ public class GameLogic : MonoBehaviour
             // ----------------- MODE 4: FULL WORDS (levelNumber == 2) -----------------
             if (levelNumber == 2)
             {
-                // Hide letter TMP (we’re showing full words here)
                 go.ClearLetterText();
 
-                // Original “hard mode” behavior
-                go.DisplayWordText(go.gridWord);
-                go.DisplayWordImage(go.gridWord);
-                go.gridImage.color = new Color(1f, 1f, 1f, 1f);
+                // ✅ WORDS MODE: display word text in all caps
+                go.DisplayWordText(go.gridWord.ToUpper());
 
-                // No letter sprite needed
+                // IMPORTANT: keep the ORIGINAL word for image lookup
+                go.DisplayWordImage(go.gridWord);
+
+                go.gridImage.color = new Color(1f, 1f, 1f, 1f);
                 go.ClearLetterImage();
             }
             else
@@ -901,7 +913,8 @@ public class GameLogic : MonoBehaviour
         }
     }
     */
-    
+
+    /*
     public void SetCurrentLetter(int _num)
     {
         currentLetterPointer = _num;
@@ -917,6 +930,57 @@ public class GameLogic : MonoBehaviour
         // you could apply letterCaseMode here to control its visual case.
         // e.g. DisplayLetterTextTMP.text = ...;
     }
+    */
+
+    public void SetCurrentLetter(int _num)
+    {
+        currentLetterPointer = _num;
+
+        // Canonical logical letter (always lowercase for checks/audio)
+        currentDisplayLetter = letterList[_num].ToLower();
+
+        string visual;
+
+        // WORDS MODE OVERRIDE: big letter is always a single uppercase letter
+        if (levelNumber == 2)
+        {
+            visual = currentDisplayLetter.ToUpper();
+        }
+        else
+        {
+            // Letter modes only
+            switch (letterCaseMode)
+            {
+                case LetterCaseMode.Uppercase:
+                    visual = currentDisplayLetter.ToUpper();
+                    break;
+
+                case LetterCaseMode.Lowercase:
+                    visual = currentDisplayLetter.ToLower();
+                    break;
+
+                case LetterCaseMode.Mixed:
+                    // Mixed letter mode: show both side-by-side
+                    visual = $"{currentDisplayLetter.ToUpper()}{currentDisplayLetter.ToLower()}";
+                    break;
+
+                default:
+                    visual = currentDisplayLetter;
+                    break;
+            }
+        }
+
+        if (DisplayLetterTMP != null)
+        {
+            DisplayLetterTMP.text = visual;
+
+            if (DisplayLetterText != null)
+                DisplayLetterText.gameObject.SetActive(false);
+        }
+    }
+
+
+
 
     public void GenerateRandomDisplayList()
 	{
@@ -1145,21 +1209,106 @@ public class GameLogic : MonoBehaviour
     }
 
     public void toggleMusicOn()
-	    {
-		    MusicOnObj.SetActive(true);
-		    MusicOffObj.SetActive(false);
-		    MusicSource.mute = false;
-	    }
+    {
+        MusicOnObj.SetActive(true);
+        MusicOffObj.SetActive(false);
 
-	public void toggleMusicOff()
-	{
-		MusicOnObj.SetActive(false);
-		MusicOffObj.SetActive(true);
-		MusicSource.mute = true;
-	}
+        MusicSource.mute = false;
 
-	// --------------------  Alphabet Game States ---------------------------//
-	public void SetGameState(string _state)
+        // If music was already playing, just unmute and continue.
+        // If nothing is playing, start the playlist.
+        if (!MusicSource.isPlaying)
+        {
+            StartPlaylist(keepCurrentTrackOnToggle);
+        }
+    }
+
+    public void toggleMusicOff()
+    {
+        MusicOnObj.SetActive(false);
+        MusicOffObj.SetActive(true);
+
+        playlistActive = false;
+        MusicSource.Stop();
+        MusicSource.mute = true;
+    }
+
+    private void StartPlaylist(bool keepCurrent)
+    {
+        if (musicTracks == null || musicTracks.Count == 0)
+        {
+            UnityEngine.Debug.LogWarning("Music playlist is empty. Assign tracks in Inspector.");
+            return;
+        }
+
+        playlistActive = true;
+
+        // If we want to resume the current clip and it's valid, keep it.
+        if (keepCurrent && MusicSource.clip != null)
+        {
+            MusicSource.loop = false; // we are looping playlist, not a single clip
+            MusicSource.Play();
+            return;
+        }
+
+        // Otherwise start from current index (or first track)
+        currentTrackIndex = Mathf.Clamp(currentTrackIndex, 0, musicTracks.Count - 1);
+        PlayTrackAtIndex(currentTrackIndex);
+    }
+
+    private void PlayTrackAtIndex(int index)
+    {
+        if (musicTracks == null || musicTracks.Count == 0) return;
+
+        index = Mathf.Clamp(index, 0, musicTracks.Count - 1);
+        currentTrackIndex = index;
+
+        MusicSource.loop = false; // IMPORTANT: loop playlist, not individual track
+        MusicSource.clip = musicTracks[currentTrackIndex];
+        MusicSource.Play();
+    }
+
+    private void PlayNextTrack()
+    {
+        if (musicTracks == null || musicTracks.Count == 0) return;
+
+        if (shuffle)
+        {
+            // Avoid repeating the same track if possible
+            if (musicTracks.Count == 1)
+            {
+                currentTrackIndex = 0;
+            }
+            else
+            {
+                int next;
+                do { next = UnityEngine.Random.Range(0, musicTracks.Count); }
+                while (next == currentTrackIndex);
+                currentTrackIndex = next;
+            }
+
+            PlayTrackAtIndex(currentTrackIndex);
+            return;
+        }
+
+        int nextIndex = currentTrackIndex + 1;
+
+        if (nextIndex >= musicTracks.Count)
+        {
+            if (!loopPlaylist)
+            {
+                playlistActive = false;
+                return;
+            }
+            nextIndex = 0;
+        }
+
+        PlayTrackAtIndex(nextIndex);
+    }
+
+
+    // --------------------  Alphabet Game States ---------------------------//
+    public void SetGameState(string _state)
 	{
 		gameState = _state;
 	}
@@ -1239,7 +1388,7 @@ public class GameLogic : MonoBehaviour
                 break;
 
             case 3: // Full words
-                    // Case mode doesn't matter here; we use full-word layout
+                letterCaseMode = LetterCaseMode.Uppercase;  // garden letters become A–Z
                 levelNumber = 2;              // the existing "hard / word" layout
                 break;
 
@@ -1777,5 +1926,18 @@ public class GameLogic : MonoBehaviour
 				break;
 
 		}
-	}
+
+        if (!playlistActive) return;
+
+        // If muted, we still want the playlist to continue logically? Usually no:
+        // If you want it NOT to advance while muted, keep this guard:
+        if (MusicSource.mute) return;
+
+        // Track ended: AudioSource is not playing and has a clip assigned
+        if (MusicSource.clip != null && !MusicSource.isPlaying)
+        {
+            PlayNextTrack();
+        }
+
+    }
 }
